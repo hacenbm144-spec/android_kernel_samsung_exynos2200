@@ -21,14 +21,17 @@ jobs:
             g++-multilib gcc-multilib git gnupg gperf \
             lib32ncurses5-dev lib32readline-dev \
             lib32z1-dev liblz4-tool libncurses5 libncurses5-dev \
-            libssl-dev libxml2 libxml2-utils \
+            libssl-dev libxml2 libxml2-utils wget \
             lzop pngcrush rsync schedtool squashfs-tools xsltproc \
             zip zlib1g-dev python3 libelf-dev \
-            clang-17 lld-17 llvm-17 \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Setup Clang toolchain
         run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y clang-17 lld-17 llvm-17
           sudo ln -sf /usr/bin/clang-17 /usr/bin/clang
           sudo ln -sf /usr/bin/ld.lld-17 /usr/bin/ld.lld
           echo "CLANG_PATH=/usr/bin" >> $GITHUB_ENV
