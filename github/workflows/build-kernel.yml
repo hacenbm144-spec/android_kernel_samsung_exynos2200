@@ -1,0 +1,140 @@
+name: Build Loki Kernel - b0s Exynos2200
+
+on:
+  workflow_dispatch:
+    inputs:
+      BUILD_KERNEL_VERSION:
+        description: 'Kernel version string'
+        required: true
+        default: 'v1.0-BBR'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex \
+            g++-multilib gcc-multilib git gnupg gperf \
+            imagemagick lib32ncurses5-dev lib32readline-dev \
+            lib32z1-dev liblz4-tool libncurses5 libncurses5-dev \
+            libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
+            lzop pngcrush rsync schedtool squashfs-tools xsltproc \
+            zip zlib1g-dev python3 python2 libelf-dev
+
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: hacenbm144-spec/android_kernel_samsung_exynos2200
+          ref: CWAI
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: Setup Clang toolchain
+        run: |
+          mkdir -p $HOME/toolchain
+          cd $HOME/toolchain
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240828-release/Clang-19.0.0git-20240828.tar.gz
+          tar -xf Clang-19.0.0git-20240828.tar.gz
+          echo "CLANG_PATH=$HOME/toolchain/bin" >> $GITHUB_ENV
+
+      - name: Enable BBR TCP + Performance tweaks in defconfig
+        run: |
+          DEFCONFIG="arch/arm64/configs/b0s_defconfig"
+          
+          # BBR TCP Congestion Control
+          sed -i 's/# CONFIG_TCP_CONG_BBR is not set/CONFIG_TCP_CONG_BBR=y/' $DEFCONFIG || echo "CONFIG_TCP_CONG_BBR=y" >> $DEFCONFIG
+          sed -i 's/CONFIG_DEFAULT_TCP_CONG="cubic"/CONFIG_DEFAULT_TCP_CONG="bbr"/' $DEFCONFIG || echo 'CONFIG_DEFAULT_TCP_CONG="bbr"' >> $DEFCONFIG
+          
+          # FQ scheduler (required for BBR)
+          sed -i 's/# CONFIG_NET_SCH_FQ is not set/CONFIG_NET_SCH_FQ=y/' $DEFCONFIG || echo "CONFIG_NET_SCH_FQ=y" >> $DEFCONFIG
+          
+          # Performance tweaks
+          echo "CONFIG_HZ_300=y" >> $DEFCONFIG
+          echo "# CONFIG_HZ_250 is not set" >> $DEFCONFIG
+          sed -i 's/CONFIG_HZ=250/CONFIG_HZ=300/' $DEFCONFIG || true
+          
+          # CPU optimizations
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> $DEFCONFIG
+          
+          echo "=== BBR and performance config applied ==="
+          grep -E "BBR|TCP_CONG|DEFAULT_TCP|NET_SCH_FQ|OPTIMIZE" $DEFCONFIG || true
+
+      - name: Build kernel
+        run: |
+          export PATH="${{ env.CLANG_PATH }}:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          
+          make O=out ARCH=arm64 b0s_defconfig
+          make -j$(nproc --all) O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            2>&1 | tee build.log
+
+      - name: Package flashable zip with AnyKernel3
+        run: |
+          # Clone AnyKernel3
+          git clone --depth=1 https://github.com/hacenbm144-spec/AnyKernel3 AnyKernel3
+          
+          # Copy kernel image
+          cp out/arch/arm64/boot/Image AnyKernel3/
+          
+          # Copy dtbo if exists
+          [ -f out/arch/arm64/boot/dtbo.img ] && cp out/arch/arm64/boot/dtbo.img AnyKernel3/
+          
+          # Configure AnyKernel3 for b0s
+          cat > AnyKernel3/anykernel.sh << 'EOF'
+          # AnyKernel3 config for Loki Kernel - b0s Exynos2200
+          properties() { '
+          kernel.string=Loki Kernel BBR b0s by hacenbm144-spec
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=b0s
+          device.name2=SM-S908B
+          device.name3=beyond2
+          supported.versions=12-16
+          '; }
+          
+          block=/dev/block/platform/13100000.ufs/by-name/boot;
+          is_slot_device=0;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+          
+          . tools/ak3-core.sh
+          . split_img
+          . repack_ramdisk
+          . flash_boot
+          EOF
+          
+          # Create flashable zip
+          cd AnyKernel3
+          zip -r9 ../Loki-BBR-b0s-${{ github.event.inputs.BUILD_KERNEL_VERSION }}.zip . -x "*.git*" -x "*.github*"
+          cd ..
+
+      - name: Upload flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: Loki-BBR-b0s-${{ github.event.inputs.BUILD_KERNEL_VERSION }}
+          path: Loki-BBR-b0s-*.zip
+          retention-days: 7
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 3
