@@ -60,6 +60,7 @@ jobs:
           export CLANG_TRIPLE=aarch64-linux-gnu-
 
           make O=out ARCH=arm64 b0s_defconfig
+make O=out ARCH=arm64 olddefconfig
           make -j$(nproc --all) O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
